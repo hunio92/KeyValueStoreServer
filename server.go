@@ -4,24 +4,54 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	goji "goji.io"
 	"goji.io/pat"
 )
 
-func (s *service) StartServer(Host, Port string) {
-	mux := goji.NewMux()
-	mux.HandleFunc(pat.Put("/entries/:key"), s.handleSet)
-	mux.HandleFunc(pat.Get("/entries"), s.handleList)
-	mux.HandleFunc(pat.Get("/entries/:key"), s.handleGet)
-	mux.HandleFunc(pat.Delete("/entries/:key"), s.handleDel)
-
-	http.ListenAndServe(Host+":"+Port, mux)
+type Server struct {
+	service *Service
+	logger  *log.Logger
+	mux     *goji.Mux
 }
 
-func (s *service) handleSet(w http.ResponseWriter, r *http.Request) {
+func NewServer(service *Service, options ...func(*Server)) *Server {
+	s := &Server{
+		service: service,
+		mux:     goji.NewMux(),
+	}
+
+	for _, f := range options {
+		f(s)
+	}
+
+	if s.logger == nil {
+		s.logger = log.New(os.Stdout, "", 0)
+	}
+
+	s.mux.HandleFunc(pat.Put("/entries/:key"), s.handleSet)
+	s.mux.HandleFunc(pat.Get("/entries"), s.handleList)
+	s.mux.HandleFunc(pat.Get("/entries/:key"), s.handleGet)
+	s.mux.HandleFunc(pat.Delete("/entries/:key"), s.handleDel)
+
+	return s
+}
+
+func Logger(logger *log.Logger) func(*Server) {
+	return func(s *Server) {
+		s.logger = logger
+	}
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 	cas := r.URL.Query().Get("cas")
 	key := pat.Param(r, "key")
 
@@ -35,7 +65,28 @@ func (s *service) handleSet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	errMsg = s.AddValue(key, cas, keyValue)
+	errMsg = s.service.AddValue(key, cas, keyValue)
+	if errMsg != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		byteErrMsg, _ := json.Marshal(errMsg)
+		w.Write(byteErrMsg)
+		return
+	}
+
+	// ToDo: Add to respKvs
+	w.WriteHeader(http.StatusOK)
+	jsonByte, _ := json.Marshal(keyValue)
+	w.Write(jsonByte)
+}
+
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	page := r.URL.Query().Get("page")
+	if page == "" {
+		page = "1"
+	}
+
+	var respKvs kvs
+	respKvs, errMsg := s.service.ListPage(page)
 	if errMsg != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		byteErrMsg, _ := json.Marshal(errMsg)
@@ -44,49 +95,41 @@ func (s *service) handleSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	jsonByte, _ := json.Marshal(keyValue)
+	jsonByte, _ := json.Marshal(respKvs)
 	w.Write(jsonByte)
 }
 
-func (s *service) handleList(w http.ResponseWriter, r *http.Request) {
-	page := r.URL.Query().Get("page")
-	if page == "" {
-		page = "1"
-	}
-	// ToDo
-	s.ListPage(page)
-	fmt.Println("list: ", page)
-}
-
-func (s *service) handleGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	key := pat.Param(r, "key")
 	fmt.Println("get: ", key)
 	var val []byte
 	var ok bool
-	if val, ok = s.GetValueByKey(key); !ok {
+	if val, ok = s.service.GetValueByKey(key); !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
+	// ToDo: Add to respKvs
 	w.WriteHeader(http.StatusOK)
 	w.Write(val)
 }
 
-func (s *service) handleDel(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDel(w http.ResponseWriter, r *http.Request) {
 	key := pat.Param(r, "key")
 	fmt.Println("delete: ", key)
 	var val []byte
 	var ok bool
-	if val, ok = s.DeleteValue(key); !ok {
+	if val, ok = s.service.DeleteValue(key); !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
+	// ToDo: Add to respKvs
 	w.WriteHeader(http.StatusOK)
 	w.Write(val)
 }
 
-func (s *service) GetBodyContent(r *http.Request, keyValue *keyData) *errorMsg {
+func (s *Server) GetBodyContent(r *http.Request, keyValue *keyData) *errorMsg {
 	var container interface{}
 	rawJSON, err := ioutil.ReadAll(r.Body)
 	if err != nil {

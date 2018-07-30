@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -23,19 +24,19 @@ type errorMsg struct {
 	Message string
 }
 
-type service struct {
+type Service struct {
 	db           *database
 	maxKeyValues int
 }
 
-func NewService(db *database, maxKeyValues int) *service {
-	return &service{
+func NewService(db *database, maxKeyValues int) *Service {
+	return &Service{
 		db:           db,
 		maxKeyValues: maxKeyValues,
 	}
 }
 
-func (s *service) AddValue(key, cas string, keyValue keyData) *errorMsg {
+func (s *Service) AddValue(key, cas string, keyValue keyData) *errorMsg {
 	s.db.m.Lock()
 	defer s.db.m.Unlock()
 
@@ -65,7 +66,7 @@ func (s *service) AddValue(key, cas string, keyValue keyData) *errorMsg {
 	return nil
 }
 
-func (s *service) GetValueByKey(key string) ([]byte, bool) {
+func (s *Service) GetValueByKey(key string) ([]byte, bool) {
 	var jsonBytes []byte
 	if val, ok := s.db.Get(key); ok {
 		jsonBytes, err := json.Marshal(val)
@@ -77,7 +78,7 @@ func (s *service) GetValueByKey(key string) ([]byte, bool) {
 	return jsonBytes, false
 }
 
-func (s *service) DeleteValue(key string) ([]byte, bool) {
+func (s *Service) DeleteValue(key string) ([]byte, bool) {
 	var jsonBytes []byte
 	if jsonBytes, ok := s.GetValueByKey(key); ok {
 		s.db.Del(key)
@@ -86,6 +87,33 @@ func (s *service) DeleteValue(key string) ([]byte, bool) {
 	return jsonBytes, false
 }
 
-func (s *service) ListPage(page string) {
+func (s *Service) ListPage(pageStr string) (kvs, *errorMsg) {
+	var respKvs kvs
+	page, err := strconv.Atoi(pageStr)
+	if err != nil {
+		return respKvs, &errorMsg{
+			Name:    "Convert",
+			Message: "Could not convert page number",
+		}
+	}
 
+	var keysToAdd []string
+	if page < 2 && len(s.db.sortedKeys) < 11 {
+		keysToAdd = s.db.sortedKeys[:len(s.db.sortedKeys)]
+	} else if page > 1 {
+		limit := 10 * page
+		start := limit - 9
+		if len(s.db.sortedKeys) >= limit {
+			keysToAdd = s.db.sortedKeys[start:limit]
+		} else {
+			keysToAdd = s.db.sortedKeys[start:len(s.db.sortedKeys)]
+		}
+	}
+
+	for _, key := range keysToAdd {
+		respKvs.data = append(respKvs.data, s.db.keyValues[key])
+	}
+
+	// listKvs.Revision = ???
+	return respKvs, nil
 }
