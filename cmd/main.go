@@ -14,7 +14,7 @@ import (
 func main() {
 	const Host = "127.0.0.1"
 	const Port = "8080"
-	const MaxKeyValues = 30
+	const MaxKeyValues = 2
 
 	db := store.NewDatabase()
 	service := store.NewService(db, MaxKeyValues)

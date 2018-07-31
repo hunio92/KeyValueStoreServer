@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-type kvs struct {
-	data     []keyData `json:kvs`
-	revision int       `json:revision`
+type StoreKvs struct {
+	Kvs      []KeyData `json:kvs`
+	Revision int       `json:revision`
 }
 
-type keyData struct {
+type KeyData struct {
 	Key       string    `json:key`
 	Value     string    `json:value`
 	Revision  int       `json:revision`
@@ -25,35 +25,70 @@ type errorMsg struct {
 }
 
 type Service struct {
-	db           *database
-	maxKeyValues int
+	db            *database
+	storeRevision int
+	maxKeyValues  int
 }
 
 func NewService(db *database, maxKeyValues int) *Service {
 	return &Service{
-		db:           db,
-		maxKeyValues: maxKeyValues,
+		db:            db,
+		storeRevision: 1,
+		maxKeyValues:  maxKeyValues,
 	}
 }
 
-func (s *Service) AddValue(key, cas string, keyValue keyData) *errorMsg {
-	s.db.m.Lock()
-	defer s.db.m.Unlock()
-
-	if len(s.db.keyValues) < s.maxKeyValues {
-		if _, ok := s.db.keyValues[key]; !ok {
-			/*
-				 keyValue.Revision++: INTERNAL revision incerement what does it mean ?
-				also increment the global revision or replace with keyValue.Revision++ ?
-				Set is also Update ?
-			*/
-			s.db.Add(key, keyValue)
+func (s *Service) AddUpdateWithoutCas(key string, casStr string, keyValue KeyData) *errorMsg {
+	if _, ok := s.GetValueByKey(key); !ok {
+		errMsg := s.addNewKeyIfNotFull(key, keyValue)
+		if errMsg != nil {
+			return errMsg
 		}
-		/*
-			else {
-			if has already the key then what ?
+	} else {
+		if casStr != "0" {
+			internalRevision := s.db.Add(key, keyValue)
+			s.storeRevision = internalRevision
+		} else {
+			return &errorMsg{
+				Name:    "Option cas equal 0",
+				Message: "The cas equal 0 and the key already exists in the database",
+			} // Didn't saw to be mentioned the return status code in case of 0 or it's 412 too ?!
+		}
+	}
+
+	fmt.Println("without cas key values: ", s.db.keyValues)
+	fmt.Println("without cas sorted values: ", s.db.sortedKeys)
+
+	return nil
+}
+
+func (s *Service) AddUpdateWithCas(key string, casStr string, keyValue KeyData) *errorMsg {
+	if !s.db.IsMaxKeyReached(s.maxKeyValues) {
+		cas, err := strconv.Atoi(casStr)
+		if err != nil {
+			return &errorMsg{
+				Name:    "Convert",
+				Message: "Could not convert page number",
 			}
-		*/
+		}
+
+		if cas == s.storeRevision {
+			if _, ok := s.GetValueByKey(key); !ok {
+				errMsg := s.addNewKeyIfNotFull(key, keyValue)
+				if errMsg != nil {
+					return errMsg
+				}
+			} else {
+				internalRevision := s.db.Add(key, keyValue)
+				s.storeRevision = internalRevision
+				fmt.Println("with cas", cas, casStr)
+			}
+		} else {
+			return &errorMsg{
+				Name:    "Bad Revision",
+				Message: fmt.Sprintf("The internal revision do not match with current store revision: %d", s.storeRevision),
+			}
+		}
 	} else {
 		return &errorMsg{
 			Name:    "Max keys reached",
@@ -61,7 +96,8 @@ func (s *Service) AddValue(key, cas string, keyValue keyData) *errorMsg {
 		}
 	}
 
-	fmt.Println("Add: ", keyValue)
+	fmt.Println("with cas key values: ", s.db.keyValues)
+	fmt.Println("with cas sorted values: ", s.db.sortedKeys)
 
 	return nil
 }
@@ -69,7 +105,11 @@ func (s *Service) AddValue(key, cas string, keyValue keyData) *errorMsg {
 func (s *Service) GetValueByKey(key string) ([]byte, bool) {
 	var jsonBytes []byte
 	if val, ok := s.db.Get(key); ok {
-		jsonBytes, err := json.Marshal(val)
+		jsonBytes, err := json.Marshal(
+			StoreKvs{
+				Kvs:      []KeyData{val},
+				Revision: s.storeRevision,
+			})
 		if err != nil {
 			return jsonBytes, false
 		}
@@ -87,8 +127,8 @@ func (s *Service) DeleteValue(key string) ([]byte, bool) {
 	return jsonBytes, false
 }
 
-func (s *Service) ListPage(pageStr string) (kvs, *errorMsg) {
-	var respKvs kvs
+func (s *Service) ListPage(pageStr string) (StoreKvs, *errorMsg) {
+	var respKvs StoreKvs
 	page, err := strconv.Atoi(pageStr)
 	if err != nil {
 		return respKvs, &errorMsg{
@@ -97,8 +137,11 @@ func (s *Service) ListPage(pageStr string) (kvs, *errorMsg) {
 		}
 	}
 
+	fmt.Println("LIST key values: ", s.db.keyValues)
+	fmt.Println("LIST sorted values: ", s.db.sortedKeys)
+
 	var keysToAdd []string
-	if page < 2 && len(s.db.sortedKeys) < 11 {
+	if page <= 1 && len(s.db.sortedKeys) < 11 {
 		keysToAdd = s.db.sortedKeys[:len(s.db.sortedKeys)]
 	} else if page > 1 {
 		limit := 10 * page
@@ -111,9 +154,27 @@ func (s *Service) ListPage(pageStr string) (kvs, *errorMsg) {
 	}
 
 	for _, key := range keysToAdd {
-		respKvs.data = append(respKvs.data, s.db.keyValues[key])
+		respKvs.Kvs = append(respKvs.Kvs, s.db.keyValues[key])
 	}
 
-	// listKvs.Revision = ???
+	respKvs.Revision = s.storeRevision
 	return respKvs, nil
+}
+
+func (s *Service) GetRevision() int {
+	return s.storeRevision
+}
+
+func (s *Service) addNewKeyIfNotFull(key string, keyValue KeyData) *errorMsg {
+	if !s.db.IsMaxKeyReached(s.maxKeyValues) {
+		internalRevision := s.db.Add(key, keyValue)
+		s.storeRevision = internalRevision
+	} else {
+		return &errorMsg{
+			Name:    "Max keys reached",
+			Message: "Could not add key: max key number reached",
+		}
+	}
+
+	return nil
 }

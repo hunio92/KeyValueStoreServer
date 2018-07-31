@@ -55,7 +55,7 @@ func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 	cas := r.URL.Query().Get("cas")
 	key := pat.Param(r, "key")
 
-	var keyValue keyData
+	var keyValue KeyData
 	errMsg := s.GetBodyContent(r, &keyValue)
 	if errMsg != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -65,17 +65,31 @@ func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	errMsg = s.service.AddValue(key, cas, keyValue)
-	if errMsg != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		byteErrMsg, _ := json.Marshal(errMsg)
-		w.Write(byteErrMsg)
-		return
+	if cas == "" || cas == "0" {
+		fmt.Println("cas:", cas)
+		errMsg = s.service.AddUpdateWithoutCas(key, cas, keyValue)
+		if errMsg != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			byteErrMsg, _ := json.Marshal(errMsg)
+			w.Write(byteErrMsg)
+			return
+		}
+	} else {
+		errMsg = s.service.AddUpdateWithCas(key, cas, keyValue)
+		if errMsg != nil {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			byteErrMsg, _ := json.Marshal(errMsg)
+			w.Write(byteErrMsg)
+			return
+		}
 	}
 
-	// ToDo: Add to respKvs
 	w.WriteHeader(http.StatusOK)
-	jsonByte, _ := json.Marshal(keyValue)
+	jsonByte, _ := json.Marshal(
+		StoreKvs{
+			Kvs:      []KeyData{keyValue},
+			Revision: s.service.GetRevision(),
+		})
 	w.Write(jsonByte)
 }
 
@@ -85,7 +99,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		page = "1"
 	}
 
-	var respKvs kvs
+	var respKvs StoreKvs
 	respKvs, errMsg := s.service.ListPage(page)
 	if errMsg != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -109,7 +123,6 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ToDo: Add to respKvs
 	w.WriteHeader(http.StatusOK)
 	w.Write(val)
 }
@@ -124,12 +137,11 @@ func (s *Server) handleDel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ToDo: Add to respKvs
 	w.WriteHeader(http.StatusOK)
 	w.Write(val)
 }
 
-func (s *Server) GetBodyContent(r *http.Request, keyValue *keyData) *errorMsg {
+func (s *Server) GetBodyContent(r *http.Request, keyValue *KeyData) *errorMsg {
 	var container interface{}
 	rawJSON, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -153,20 +165,17 @@ func (s *Server) GetBodyContent(r *http.Request, keyValue *keyData) *errorMsg {
 		case "value":
 			keyValue.Value = value.(string)
 		case "revision":
-			keyValue.Revision = int(value.(float64))
+			keyValue.Revision = s.service.GetRevision()
 		case "timestamp":
 			keyValue.Timestamp = time.Unix(int64(value.(float64)), 0)
 		default:
 			return &errorMsg{
 				Name:    "Field error",
-				Message: "Filed doesn't exists",
+				Message: "Field does NOT exists",
 			}
 		}
 	}
 
-	if keyValue.Revision == 0 {
-		keyValue.Revision = 1
-	}
 	if keyValue.Timestamp.IsZero() {
 		keyValue.Timestamp = time.Now()
 	}
