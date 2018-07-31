@@ -67,3 +67,7 @@ func (db *database) IsMaxKeyReached(maxKeys int) bool {
 	}
 	return true
 }
+
+func (db *database) SizeOfKeyValues() int {
+	return len(db.keyValues)
+}

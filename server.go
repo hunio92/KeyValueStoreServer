@@ -100,11 +100,9 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var respKvs StoreKvs
-	respKvs, errMsg := s.service.ListPage(page)
-	if errMsg != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		byteErrMsg, _ := json.Marshal(errMsg)
-		w.Write(byteErrMsg)
+	respKvs, ok := s.service.ListPage(page)
+	if ok == false {
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 

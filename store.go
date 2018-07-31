@@ -127,42 +127,62 @@ func (s *Service) DeleteValue(key string) ([]byte, bool) {
 	return jsonBytes, false
 }
 
-func (s *Service) ListPage(pageStr string) (StoreKvs, *errorMsg) {
+func (s *Service) ListPage(pageStr string) (StoreKvs, bool) {
 	var respKvs StoreKvs
 	page, err := strconv.Atoi(pageStr)
 	if err != nil {
-		return respKvs, &errorMsg{
-			Name:    "Convert",
-			Message: "Could not convert page number",
-		}
+		return respKvs, false
 	}
 
-	fmt.Println("LIST key values: ", s.db.keyValues)
-	fmt.Println("LIST sorted values: ", s.db.sortedKeys)
+	lenOfKeyValue := s.db.SizeOfKeyValues()
+	start, limit := s.getPageContentIntervallum(page, lenOfKeyValue)
 
 	var keysToAdd []string
-	if page <= 1 && len(s.db.sortedKeys) < 11 {
-		keysToAdd = s.db.sortedKeys[:len(s.db.sortedKeys)]
-	} else if page > 1 {
-		limit := 10 * page
-		start := limit - 9
-		if len(s.db.sortedKeys) >= limit {
-			keysToAdd = s.db.sortedKeys[start:limit]
-		} else {
-			keysToAdd = s.db.sortedKeys[start:len(s.db.sortedKeys)]
-		}
+	if start < limit {
+		keysToAdd = s.db.sortedKeys[start:limit]
+	} else {
+		fmt.Println("WTF !?!")
+		return respKvs, false
 	}
+	fmt.Println("keysToAdd: ", keysToAdd)
 
 	for _, key := range keysToAdd {
 		respKvs.Kvs = append(respKvs.Kvs, s.db.keyValues[key])
 	}
 
+	fmt.Println("respKvs: ", respKvs)
+
 	respKvs.Revision = s.storeRevision
-	return respKvs, nil
+	return respKvs, true
 }
 
-func (s *Service) GetRevision() int {
-	return s.storeRevision
+func (s *Service) getPageContentIntervallum(page, lenOfKeyValue int) (int, int) {
+	var start, limit int
+	if page <= 1 || lenOfKeyValue < 11 {
+		start = 0
+		if lenOfKeyValue >= 10 {
+			limit = page * 10
+		} else {
+			limit = lenOfKeyValue - 1
+		}
+
+		return start, limit
+	}
+
+	if page > 1 && page*10 < lenOfKeyValue {
+		limit = lenOfKeyValue - (lenOfKeyValue % (page * 10))
+		start = limit - 10
+
+		return start, limit
+	}
+	if page*10 > lenOfKeyValue {
+		limit = lenOfKeyValue
+		start = page*10 - 10
+
+		return start, limit
+	}
+
+	return 0, 0
 }
 
 func (s *Service) addNewKeyIfNotFull(key string, keyValue KeyData) *errorMsg {
@@ -177,4 +197,8 @@ func (s *Service) addNewKeyIfNotFull(key string, keyValue KeyData) *errorMsg {
 	}
 
 	return nil
+}
+
+func (s *Service) GetRevision() int {
+	return s.storeRevision
 }
